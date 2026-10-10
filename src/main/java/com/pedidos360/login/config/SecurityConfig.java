@@ -7,7 +7,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
@@ -23,6 +25,9 @@ public class SecurityConfig {
 
   @Value("${azure.tenant-id:common}")
   private String tenantId;
+
+  @Value("${cognito.jwks-uri:https://cognito-idp.us-east-1.amazonaws.com/us-east-1_A8lrPsDta/.well-known/jwks.json}")
+  private String cognitoJwksUri;
 
   @Value("${cors.allowed-origins:http://localhost:4200}")
   private String allowedOrigins;
@@ -64,6 +69,8 @@ public class SecurityConfig {
     // por eso se usa el JWKS v1: issuerUri + tenantId + "/discovery/keys".
     // Sin tenant real ('common') no hay fetch en startup: sin token -> 401 sin tocar red.
     // Con tenant real valida firma contra JWKS de Azure.
+    // Segundo emisor (Cognito): se prueba Azure primero porque sostiene la
+    // evaluación 1; si la firma no calza ahí se intenta con el JWKS del pool.
     String base = (issuerUri != null && !issuerUri.isBlank())
         ? issuerUri.trim()
         : "https://login.microsoftonline.com/";
@@ -71,6 +78,16 @@ public class SecurityConfig {
       base += "/";
     }
     String tid = (tenantId != null && !tenantId.isBlank()) ? tenantId.trim() : "common";
-    return NimbusJwtDecoder.withJwkSetUri(base + tid + "/discovery/keys").build();
+    NimbusJwtDecoder azure = NimbusJwtDecoder.withJwkSetUri(base + tid + "/discovery/keys").build();
+    NimbusJwtDecoder cognito = NimbusJwtDecoder.withJwkSetUri(cognitoJwksUri.trim()).build();
+    return token -> decodeDual(azure, cognito, token);
+  }
+
+  static Jwt decodeDual(JwtDecoder primario, JwtDecoder respaldo, String token) {
+    try {
+      return primario.decode(token);
+    } catch (JwtException e) {
+      return respaldo.decode(token);
+    }
   }
 }
